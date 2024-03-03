@@ -1,118 +1,102 @@
+use std::fmt::Write;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum LexerToken {
-    EndOfFile = -1,
-    Function = -2,
-    Identifier = -3,
-    Number = -4,
+    EndOfFile,
+    Function,
+    Identifier(String),
+    Number,
+    Char(char),
 }
 
-#[derive(Default)]
 struct Lexer {
     content: String,
-    identifier_string: String,
-    num_val_string: String,
-    // string_string: String,
-
-    current_token: isize,
-    last_token: isize,
-    position: isize
+    string_buffer: String,
+    last_char: char,
+    position: usize,
 }
 
 impl Lexer {
-    fn start(&mut self, get_content: String) {
-
-        self.content = get_content;
-        self.position = -1;
-        self.last_token = ' ' as isize;
+    fn new(content: String) -> Self {
+        Self {
+            content,
+            string_buffer: String::new(),
+            last_char: ' ',
+            position: 0,
+        }
     }
 
-    fn advance(&mut self) -> isize {
-
+    fn advance(&mut self) -> char {
+        let c = self.content.chars().nth(self.position).unwrap();
+        self.last_char = c;
         self.position += 1;
-        dbg!(self.position, &self.content);
-        return self.content.chars().nth(self.position as usize).unwrap() as isize;
+        c
     }
 
-    fn get_next_token(&mut self) {
-        self.current_token = self.get_token();
-    }
-
-    fn get_token(&mut self) -> isize {
-
-        let last_token_converted = self.last_token as u8 as char;
-
-        while char::is_whitespace(last_token_converted) {
-            self.last_token = self.advance();
+    fn token(&mut self) -> LexerToken {
+        while self.last_char.is_whitespace() {
+            self.last_char = self.advance();
         }
 
-        if char::is_alphabetic(last_token_converted) {
-            return self.get_identifier();
+        if self.last_char.is_alphabetic() {
+            return self.identifier();
         }
 
-        if char::is_numeric(last_token_converted) {
-            return self.get_number();
+        if self.last_char.is_numeric() {
+            return self.number();
         }
 
-        let mut this_token = self.last_token;
-        self.last_token = self.advance();
+        let token = if self.last_char < ' ' {
+            LexerToken::EndOfFile
+        } else {
+            LexerToken::Char(self.last_char)
+        };
 
-        if this_token < 32 { this_token = LexerToken::EndOfFile as isize; }
+        self.last_char = self.advance();
 
-        return this_token;
+        token
     }
 
-    fn is_still_identifier(&mut self, tok: isize) -> bool {
+    fn identifier(&mut self) -> LexerToken {
+        self.string_buffer.clear();
 
-        let tok_converted = tok as u8 as char;
-        return char::is_alphanumeric(tok_converted) || tok_converted == '_';
-    }
-
-    fn is_identifier(&mut self, identifier: &str) -> bool {
-        return self.identifier_string == identifier.to_string();
-    }
-
-    fn get_identifier(&mut self) -> isize {
-
-        self.identifier_string = self.last_token.to_string();
-
-        while self.is_still_identifier(self.last_token) {
-            
-            self.last_token = self.advance();
-            self.identifier_string += &self.last_token.to_string();
+        while is_identifier_char(self.last_char) {
+            self.last_char = self.advance();
+            self.string_buffer.write_char(self.last_char).unwrap();
         }
 
-        if self.is_identifier("fn") { return LexerToken::Function as isize; }
-
-        println!("Found {}", self.identifier_string);
-
-        return LexerToken::Identifier as isize;
+        match self.string_buffer.as_str() {
+            "fn" => LexerToken::Function,
+            _ => LexerToken::Identifier(self.string_buffer.to_string()),
+        }
     }
 
-    fn get_number(&mut self) -> isize {
+    fn number(&mut self) -> LexerToken {
+        self.string_buffer.clear();
 
-        let tok_converted = self.last_token as u8 as char;
-        let result: String;
-
-        while char::is_numeric(tok_converted) || tok_converted == '.' || tok_converted == 'f' || tok_converted == '_' {
-
-            if tok_converted != '_' {
-                self.num_val_string += &self.last_token.to_string()
+        while self.last_char.is_numeric() || matches!(self.last_char, '.' | 'f' | '_') {
+            if self.last_char != '_' {
+                self.string_buffer.write_char(self.last_char).unwrap();
             }
         }
 
-        return LexerToken::Number as isize;
+        LexerToken::Number
     }
 
-    fn get_content(&self) -> String {
+    // fn content(&self) -> &str {
+    //     &self.content
+    // }
+}
 
-        return self.content.clone();
-    }
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 fn main() {
-    let mut lex: Lexer = Lexer::default();
-    lex.start("Hello!".to_string());
+    let mut lex: Lexer = Lexer::new("Hello!".to_string());
 
     lex.advance();
 
-    lex.get_next_token();
+    let token = lex.token();
+    dbg!(token);
 }
