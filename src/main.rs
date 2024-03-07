@@ -1,6 +1,7 @@
 mod lexer;
 
 use std::fs;
+use std::process::Command;
 
 #[derive(Clone, PartialEq)]
 enum Type {
@@ -92,6 +93,7 @@ enum Expression {
         lvalue: Box<Expression>,
         rvalue: Box<Expression>
     },
+    Nothing,
 }
 
 fn find_type(reg_vars: &Vec<VariableInfo>, name: String) -> Type {
@@ -187,7 +189,9 @@ impl Expression {
 
             Expression::Variable { name } => {
                 return "$".to_string() + name
-            }
+            },
+
+            Expression::Nothing => "".to_string()
 
         }
     }
@@ -230,13 +234,27 @@ impl Parser {
         let rv: Expression = self.parse_expression();
 
         let rv_name = rv.get_name();
+
+        if rv_name == "" {
+            return Expression::Equals { lvalue: Box::new(lv), rvalue: Box::new(rv) }
+        }
+
+        let mut get_id: usize = 0;
         for r in &mut self.all_registered_variables {
             if r.name == rv_name {
                 r.moved = true;
+                get_id = r.id;
+                break;
             }
         }
 
-        return Expression::Equals { lvalue: Box::new(lv), rvalue: Box::new(rv) }
+        for r in &mut self.all_registered_variables {
+            if r.name == lv_name {
+                r.id = get_id;
+            }
+        }
+
+        return Expression::Nothing;
     }
 
     fn parse_binary_operator(&mut self, expr: Expression) -> Expression {
@@ -440,6 +458,10 @@ impl Parser {
         println!("{}", result);
 
         fs::write("output.s", result).expect("Unable to write output.s");
+
+        println!("Compiling via clang...");
+
+        let compiler_output = Command::new("clang").args(["output.s", "-o", "result", "-nostdlib"]).output().expect("Failed to execute clang.");
     }
 }
 
