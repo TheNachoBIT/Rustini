@@ -1,10 +1,79 @@
 mod lexer;
 
+use std::fs;
+
+#[derive(Clone, PartialEq)]
 enum Type {
-    Int32,
+    Int64 {
+        move_inst: String,
+        all_memory: Vec<String>,
+    },
+    Int32 {
+        move_inst: String,
+        all_memory: Vec<String>,
+    },
+    Void
+}
+
+fn int64_memory() -> Vec<String> {
+    return vec!["rax".to_string(), 
+    "rbx".to_string(), 
+    "rcx".to_string(), 
+    "rdx".to_string(), 
+    "r8".to_string(), 
+    "r9".to_string(), 
+    "r10".to_string(), 
+    "r11".to_string(), 
+    "r12".to_string(), 
+    "r13".to_string(), 
+    "r14".to_string(), 
+    "r15".to_string()];
+}
+
+fn int32_memory() -> Vec<String> {
+    return vec!["eax".to_string(), "ebx".to_string(), "ecx".to_string(), "edx".to_string()];
+}
+
+impl Type {
+
+    fn get_real_value(&self, id: usize) -> String {
+
+        match self {
+            Type::Int64 { move_inst: _, all_memory } => {
+                "%".to_string() + &all_memory[id - 1]
+            },
+            Type::Int32 { move_inst: _, all_memory } => {
+                "%".to_string() + &all_memory[id - 1]
+            },
+            _ => panic!("Type not currently supported.")
+        }
+    }
+
+    fn move_codegen(&self, a: &Box<Expression>, b: &Box<Expression>, reg_vars: &Vec<VariableInfo>) -> String {
+
+        match self {
+
+            Type::Int64 { move_inst, all_memory: _ } => {
+
+                let first: String = move_inst.replace("{{1}}", &b.codegen(reg_vars));
+                let second: String = first.replace("{{2}}", &a.codegen(reg_vars));
+                return second;
+            },
+
+            Type::Int32 { move_inst, all_memory: _ } => {
+
+                let first: String = move_inst.replace("{{1}}", &b.codegen(reg_vars));
+                let second: String = first.replace("{{2}}", &a.codegen(reg_vars));
+                return second;
+            },
+
+            _ => panic!("Type not available for codegen.")
+        }
+    }
 }
 
 enum Expression {
+
     Let {
         name: String,
         ty: Type
@@ -25,8 +94,59 @@ enum Expression {
     },
 }
 
+fn find_type(reg_vars: &Vec<VariableInfo>, name: String) -> Type {
+    for r in reg_vars {
+        if r.name == name {
+            return r.ty.clone()
+        }
+    }
+
+    return Type::Void;
+}
+
+fn get_id(reg_vars: &Vec<VariableInfo>, va: &mut VariableInfo) {
+
+    let mut final_id: usize = 0;
+    let mut highest_id: usize = 0;
+
+    for r in reg_vars {
+        if r.ty == va.ty {
+
+            if r.moved {
+                final_id = r.id;
+            }
+            else if r.id == final_id {
+                final_id = 0;
+            }
+
+            if highest_id < r.id {
+                highest_id = r.id;
+            }
+        }
+    }
+
+    if final_id == 0 {
+        final_id = highest_id + 1;
+    }
+
+    va.id = final_id;
+}
+
 impl Expression {
-    fn codegen(&self) -> String {
+
+    fn get_name(&self) -> String {
+        match self {
+            Expression::Variable { name } => {
+                name.to_string()
+            }
+            Expression::Let { name, ty: _ } => {
+                name.to_string()
+            }
+            _ => "".to_string()
+        }
+    }
+
+    fn codegen(&self, reg_vars: &Vec<VariableInfo>) -> String {
         match self {
 
             Expression::Function { name, instructions } => {
@@ -35,7 +155,7 @@ impl Expression {
                 result += ":\n";
 
                 for inst in instructions {
-                    let inst_cg: String = inst.codegen();
+                    let inst_cg: String = inst.codegen(reg_vars);
 
                     if inst_cg != "" {
                         result += "\t";
@@ -44,41 +164,46 @@ impl Expression {
                     }
                 }
 
+                // Temporary return for testing purposes only.
+                result += "\tretq\n";
+
                 result
             },
 
             Expression::Number { val } => {
-                val.to_string()
+                return "$".to_string() + &val.to_string()
             },
 
             Expression::Equals { lvalue, rvalue } => {
 
-                let mut result: String = String::new();
-                result += "movl ";
-                result += &lvalue.codegen();
-                result += ", ";
-                result += &rvalue.codegen();
-                result
+                let ty = find_type(reg_vars, lvalue.get_name());
+
+                return ty.move_codegen(lvalue, rvalue, reg_vars);
             },
 
             Expression::Let { name, ty: _ } => {
-                return name.to_string()
+                return "$".to_string() + name
             },
 
-            _ => "".to_string()
+            Expression::Variable { name } => {
+                return "$".to_string() + name
+            }
 
         }
     }
 }
 
 struct VariableInfo {
-    name: String
+    name: String,
+    ty: Type,
+    id: usize,
+    moved: bool,
 }
 
 struct Parser {
     lex: lexer::Lexer,
     all_instructions: Vec<Expression>,
-    all_registered_variables: Vec<VariableInfo>
+    all_registered_variables: Vec<VariableInfo>,
 }
 
 impl Parser {
@@ -87,15 +212,29 @@ impl Parser {
         Self {
             lex: add_lex,
             all_instructions: Vec::new(),
-            all_registered_variables: Vec::new()
+            all_registered_variables: Vec::new(),
         }
     }
 
     fn parse_equals(&mut self, lv: Expression) -> Expression {
 
+        let lv_name = lv.get_name();
+        for r in &self.all_registered_variables {
+            if r.name == lv_name && r.moved {
+                panic!("Variable {} already moved/borrowed!", lv_name);
+            }
+        }
+
         self.lex.get_next_token();
 
         let rv: Expression = self.parse_expression();
+
+        let rv_name = rv.get_name();
+        for r in &mut self.all_registered_variables {
+            if r.name == rv_name {
+                r.moved = true;
+            }
+        }
 
         return Expression::Equals { lvalue: Box::new(lv), rvalue: Box::new(rv) }
     }
@@ -120,7 +259,8 @@ impl Parser {
 
             let ident_str = ident.as_str();
             match ident_str {
-                "i32" => return Type::Int32,
+                "i64" => return Type::Int64 { move_inst: "movq {{1}}, {{2}}".to_string(), all_memory: int64_memory() },
+                "i32" => return Type::Int32 { move_inst: "movl {{1}}, {{2}}".to_string(), all_memory: int32_memory() },
                 _ => panic!("Unknown type.")
             }
         }
@@ -139,6 +279,12 @@ impl Parser {
             panic!("Expected identifier");
         }
 
+        for v in &self.all_registered_variables {
+            if v.name == get_name {
+                panic!("Variable already exists.");
+            }
+        }
+
         self.lex.get_next_token();
 
         if self.lex.current_token != lexer::LexerToken::Char(':') {
@@ -151,7 +297,13 @@ impl Parser {
 
         self.lex.get_next_token();
 
-        self.all_registered_variables.push(VariableInfo { name: get_name.clone() });
+        let mut v_info: VariableInfo = VariableInfo { name: get_name.clone(), ty: get_type.clone(), id: 0, moved: false };
+
+        get_id(&self.all_registered_variables, &mut v_info);
+
+        //dbg!(v_info.id);
+
+        self.all_registered_variables.push(v_info);
 
         return Expression::Let { name: get_name, ty: get_type };
     }
@@ -165,11 +317,31 @@ impl Parser {
         return Expression::Number { val: get_val.parse().unwrap() };
     }
 
+    fn parse_variable(&mut self, ident: String) -> Expression {
+
+        let mut found: bool = false;
+
+        for v in &self.all_registered_variables {
+            if v.name == ident {
+                found = true;
+            }
+        }
+
+        if !found {
+            panic!("Variable not found.");
+        }
+
+        self.lex.get_next_token();
+
+        return Expression::Variable { name: ident };
+    }
+
     fn parse_primary(&mut self) -> Expression {
 
-        match self.lex.current_token {
+        match &self.lex.current_token {
             lexer::LexerToken::Let => self.parse_let(),
             lexer::LexerToken::Number => self.parse_number(),
+            lexer::LexerToken::Identifier(ident) => self.parse_variable(ident.clone()),
             _ => panic!("Unknown identifier found!")
         }
     }
@@ -257,14 +429,33 @@ impl Parser {
             };
         }
 
+        let mut final_codegen: String = String::new();
+
         for inst in &self.all_instructions {
-            println!("{}", inst.codegen());
+            final_codegen += &inst.codegen(&self.all_registered_variables);
         }
+
+        let result = replacement_pass(final_codegen.clone(), &self.all_registered_variables);
+
+        println!("{}", result);
+
+        fs::write("output.s", result).expect("Unable to write output.s");
     }
 }
 
+fn replacement_pass(cg: String, reg_vars: &Vec<VariableInfo>) -> String {
+
+    let mut result = cg;
+    for r in reg_vars {
+        let real_name = "$".to_string() + &r.name;
+        result = result.replace(&real_name, &r.ty.get_real_value(r.id));
+    }
+
+    return result;
+}
+
 fn main() {
-    let mut lex: lexer::Lexer = lexer::Lexer::new("fn main() { let test_var: i32 = 5; }".to_string());
+    let lex: lexer::Lexer = lexer::Lexer::new(fs::read_to_string("main.rstini").expect("Cannot open main.rstini"));
 
     let mut par: Parser = Parser::new(lex);
 

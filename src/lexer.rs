@@ -41,7 +41,7 @@ impl Lexer {
 
     pub fn get_next_token(&mut self) {
         self.current_token = self.token();
-        dbg!(&self.current_token);
+        //dbg!(&self.current_token);
     }
 
     pub fn token(&mut self) -> LexerToken {
