@@ -8,6 +8,7 @@ pub enum LexerToken {
     Number,
     Char(char),
     Let,
+    As,
 }
 
 pub struct Lexer {
@@ -80,6 +81,7 @@ impl Lexer {
         match self.string_buffer.as_str() {
             "fn" => LexerToken::Function,
             "let" => LexerToken::Let,
+            "as" => LexerToken::As,
             _ => LexerToken::Identifier(self.string_buffer.to_string()),
         }
     }

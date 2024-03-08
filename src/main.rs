@@ -7,13 +7,31 @@ use std::process::Command;
 enum Type {
     Int64 {
         move_inst: String,
+        move_cast_inst: String,
         all_memory: Vec<String>,
     },
     Int32 {
         move_inst: String,
+        move_cast_inst: String,
         all_memory: Vec<String>,
     },
     Void
+}
+
+fn new_int64_type() -> Type {
+    Type::Int64 { 
+        move_inst: "movq {{1}}, {{2}}".to_string(), 
+        move_cast_inst: "movsx {{1}}, {{2}}".to_string(), 
+        all_memory: int64_memory() 
+    }
+}
+
+fn new_int32_type() -> Type {
+    Type::Int32 {
+        move_inst: "movl {{1}}, {{2}}".to_string(),
+        move_cast_inst: "movsx {{1}}, {{2}}".to_string(), 
+        all_memory: int32_memory() 
+    }
 }
 
 fn int64_memory() -> Vec<String> {
@@ -40,30 +58,41 @@ impl Type {
     fn get_real_value(&self, id: usize) -> String {
 
         match self {
-            Type::Int64 { move_inst: _, all_memory } => {
+            Type::Int64 { move_inst: _, all_memory, move_cast_inst: _ } => {
                 "%".to_string() + &all_memory[id - 1]
             },
-            Type::Int32 { move_inst: _, all_memory } => {
+            Type::Int32 { move_inst: _, all_memory, move_cast_inst: _ } => {
                 "%".to_string() + &all_memory[id - 1]
             },
             _ => panic!("Type not currently supported.")
         }
     }
 
-    fn move_codegen(&self, a: &Box<Expression>, b: &Box<Expression>, reg_vars: &Vec<VariableInfo>) -> String {
+    //fn is_primitive(&self) -> bool {
+    //    match self {
+    //        Type::Void => false,
+    //        _ => true
+    //    }
+    //}
+
+    fn move_codegen(&self, a: &Box<Expression>, b: &Box<Expression>, reg_vars: &Vec<VariableInfo>, is_primitive_cast: bool) -> String {
 
         match self {
 
-            Type::Int64 { move_inst, all_memory: _ } => {
+            Type::Int64 { move_inst, all_memory: _, move_cast_inst } => {
 
-                let first: String = move_inst.replace("{{1}}", &b.codegen(reg_vars));
+                let final_inst = if is_primitive_cast { move_cast_inst.clone() } else { move_inst.clone() };
+
+                let first: String = final_inst.replace("{{1}}", &b.codegen(reg_vars));
                 let second: String = first.replace("{{2}}", &a.codegen(reg_vars));
                 return second;
             },
 
-            Type::Int32 { move_inst, all_memory: _ } => {
+            Type::Int32 { move_inst, all_memory: _, move_cast_inst } => {
 
-                let first: String = move_inst.replace("{{1}}", &b.codegen(reg_vars));
+                let final_inst = if is_primitive_cast { move_cast_inst.clone() } else { move_inst.clone() };
+
+                let first: String = final_inst.replace("{{1}}", &b.codegen(reg_vars));
                 let second: String = first.replace("{{2}}", &a.codegen(reg_vars));
                 return second;
             },
@@ -92,6 +121,10 @@ enum Expression {
     Equals {
         lvalue: Box<Expression>,
         rvalue: Box<Expression>
+    },
+    PrimitiveCast {
+        val: Box<Expression>,
+        ty: Type
     },
     Nothing,
 }
@@ -180,7 +213,9 @@ impl Expression {
 
                 let ty = find_type(reg_vars, lvalue.get_name());
 
-                return ty.move_codegen(lvalue, rvalue, reg_vars);
+                let is_primitive_cast: bool = if let Expression::PrimitiveCast { val: _, ty: _ } = &**rvalue { true } else { false };
+
+                return ty.move_codegen(lvalue, rvalue, reg_vars, is_primitive_cast);
             },
 
             Expression::Let { name, ty: _ } => {
@@ -189,6 +224,10 @@ impl Expression {
 
             Expression::Variable { name } => {
                 return "$".to_string() + name
+            },
+
+            Expression::PrimitiveCast { val, ty: _ } => {
+                return val.codegen(reg_vars)
             },
 
             Expression::Nothing => "".to_string()
@@ -223,9 +262,15 @@ impl Parser {
     fn parse_equals(&mut self, lv: Expression) -> Expression {
 
         let lv_name = lv.get_name();
+        let mut lv_type: Type = Type::Void;
+
         for r in &self.all_registered_variables {
-            if r.name == lv_name && r.moved {
-                panic!("Variable {} already moved/borrowed!", lv_name);
+            if r.name == lv_name {
+                if r.moved {
+                    panic!("Variable {} already moved/borrowed!", lv_name);
+                }
+
+                lv_type = r.ty.clone();
             }
         }
 
@@ -233,19 +278,30 @@ impl Parser {
 
         let rv: Expression = self.parse_expression();
 
-        let rv_name = rv.get_name();
-
-        if rv_name == "" {
-            return Expression::Equals { lvalue: Box::new(lv), rvalue: Box::new(rv) }
+        if let Expression::PrimitiveCast { val: _, ty } = &rv {
+            if &lv_type != ty {
+                panic!("Types of left and right variables are not the same!");
+            }
         }
+
+        let rv_name = rv.get_name();
 
         let mut get_id: usize = 0;
         for r in &mut self.all_registered_variables {
             if r.name == rv_name {
+
+                if lv_type != r.ty {
+                    panic!("Types of left and right variables are not the same!");
+                }
+
                 r.moved = true;
                 get_id = r.id;
                 break;
             }
+        }
+
+        if rv_name == "" {
+            return Expression::Equals { lvalue: Box::new(lv), rvalue: Box::new(rv) }
         }
 
         for r in &mut self.all_registered_variables {
@@ -257,10 +313,22 @@ impl Parser {
         return Expression::Nothing;
     }
 
+    fn parse_primitive_cast(&mut self, expr: Expression) -> Expression {
+
+        self.lex.get_next_token();
+
+        let get_ty = self.get_type();
+
+        self.lex.get_next_token();
+
+        return Expression::PrimitiveCast { val: Box::new(expr), ty: get_ty };
+    }
+
     fn parse_binary_operator(&mut self, expr: Expression) -> Expression {
 
         match self.lex.current_token {
             lexer::LexerToken::Char('=') => self.parse_equals(expr),
+            lexer::LexerToken::As => self.parse_primitive_cast(expr),
             _ => expr
         }
     }
@@ -277,8 +345,8 @@ impl Parser {
 
             let ident_str = ident.as_str();
             match ident_str {
-                "i64" => return Type::Int64 { move_inst: "movq {{1}}, {{2}}".to_string(), all_memory: int64_memory() },
-                "i32" => return Type::Int32 { move_inst: "movl {{1}}, {{2}}".to_string(), all_memory: int32_memory() },
+                "i64" => return new_int64_type(),
+                "i32" => return new_int32_type(),
                 _ => panic!("Unknown type.")
             }
         }
@@ -461,7 +529,7 @@ impl Parser {
 
         println!("Compiling via clang...");
 
-        let compiler_output = Command::new("clang").args(["output.s", "-o", "result", "-nostdlib"]).output().expect("Failed to execute clang.");
+        let _compiler_output = Command::new("clang").args(["output.s", "-o", "result", "-nostdlib"]).output().expect("Failed to execute clang.");
     }
 }
 
