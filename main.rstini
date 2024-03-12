@@ -1,5 +1,5 @@
-fn main() {
+fn main() -> i32 {
 	
 	let a: i32 = 10;
-	let b: i64 = a as i64;
+	return a;
 }
