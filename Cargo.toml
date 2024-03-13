@@ -6,4 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-cranelift = "0.105.2"
+cranelift = "0.105.3"
+cranelift-object = "0.105.3"
+cranelift-module = "0.105.3"
+target-lexicon = "0.12.14"

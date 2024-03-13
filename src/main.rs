@@ -5,6 +5,7 @@ use std::process::Command;
 
 use cranelift::codegen::entity::EntityRef;
 use cranelift::codegen::ir::{AbiParam, UserFuncName, Function, InstBuilder, Signature};
+use cranelift::codegen::Context;
 use cranelift::codegen::isa::CallConv;
 use cranelift::codegen::settings;
 use cranelift::codegen::verifier::verify_function;
@@ -16,6 +17,22 @@ use cranelift::prelude::types::*;
 use cranelift::prelude::Value;
 
 use cranelift::prelude::Imm64;
+
+use cranelift_object::ObjectBuilder;
+use cranelift_object::ObjectModule;
+
+use cranelift::prelude::Configurable;
+
+use cranelift_module::Module;
+use cranelift_module::Linkage;
+
+use cranelift::prelude::isa;
+
+use target_lexicon::Triple;
+
+use std::fs::File;
+
+use cranelift::prelude::isa::x64::settings::builder;
 
 #[derive(Clone, PartialEq, Debug)]
 enum RType {
@@ -57,6 +74,11 @@ enum Expression {
         lvalue: Box<Expression>,
         rvalue: Box<Expression>
     },
+    RAdd {
+        target: Box<Expression>,
+        lvalue: Box<Expression>,
+        rvalue: Box<Expression>
+    },
     RRealReturn {
         ret: Box<Expression>
     },
@@ -88,7 +110,7 @@ impl Expression {
             Expression::RVariable { name } | Expression::RLet { name, .. } => {
                 find_cranelift_variable(name.to_string(), reg_vars)
             }
-            _ => panic!("codegen_variable() has no use fo {:#?}.", self)
+            _ => panic!("codegen_variable() has no use for {:#?}.", self)
         }
     }
 
@@ -100,7 +122,10 @@ impl Expression {
             Expression::RVariable { name, .. } => {
                 builder.use_var(*find_cranelift_variable(name.to_string(), reg_vars))
             },
-            _ => panic!("codegen_variable() has no use for {:#?}.", self)
+            Expression::RAdd { target, .. } => {
+                builder.use_var(*target.codegen_variable(&reg_vars))
+            },
+            _ => panic!("codegen_value() has no use for {:#?}.", self)
         }
     }
 
@@ -108,8 +133,25 @@ impl Expression {
 
         if let Expression::RFunction { name, ty, instructions } = self {
 
+            let mut shared_builder = settings::builder();
+            shared_builder.enable("is_pic").unwrap();
+            let shared_flags = settings::Flags::new(shared_builder);
+    
+            let isa_builder = isa::lookup(Triple::host()).unwrap();
+            let isa = isa_builder.finish(shared_flags).unwrap();
+            let call_conv = isa.default_call_conv();
+
+            let obj_builder =
+                ObjectBuilder::new(isa, &**name, cranelift_module::default_libcall_names()).unwrap();
+            let mut obj_module = ObjectModule::new(obj_builder);
+
             let mut sig = Signature::new(CallConv::SystemV);
             sig.returns.push(AbiParam::new(ty.codegen()));
+
+            let fid = obj_module
+                .declare_function(&**name, Linkage::Export, &sig)
+                .unwrap();
+
             let mut fn_builder_ctx = FunctionBuilderContext::new();
             let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
             {
@@ -121,7 +163,18 @@ impl Expression {
                 for i in instructions {
                     i.codegen(&mut builder, reg_vars, ty.clone());
                 }
+
+                builder.seal_all_blocks();
+                builder.finalize();
             }
+
+            let mut context = Context::for_function(func.clone());
+            obj_module.define_function(fid, &mut context).unwrap();
+
+            let res = obj_module.finish();
+
+            let mut file = File::create(name.to_string() + ".o").unwrap();
+            res.object.write_stream(&mut file).unwrap();
 
             return func;
         }
@@ -151,6 +204,20 @@ impl Expression {
                 let rv = rvalue.codegen_value(builder, lv_ty, reg_vars);
 
                 builder.def_var(*lv, rv);
+            },
+            Expression::RAdd { target, lvalue, rvalue } => {
+
+                lvalue.codegen(builder, reg_vars, func_ty.clone());
+                rvalue.codegen(builder, reg_vars, func_ty.clone());
+
+                let lv_ty = if lvalue.get_name() != "" { find_type(lvalue.get_name(), &reg_vars) } else { func_ty.clone() };
+
+                let lv = lvalue.codegen_value(builder, lv_ty.clone(), reg_vars);
+                let rv = rvalue.codegen_value(builder, lv_ty, reg_vars);
+
+                let add = builder.ins().iadd(lv, rv);
+
+                builder.def_var(*target.codegen_variable(&reg_vars), add);
             },
             Expression::RRealReturn { ret } => {
 
@@ -198,11 +265,11 @@ struct VariableInfo {
 }
 
 impl VariableInfo {
-    fn new(get_name: String, get_type: RType) -> Self {
+    fn new(get_name: String, get_type: RType, get_id: usize) -> Self {
         Self {
             name: get_name,
             ty: get_type,
-            id: 0,
+            id: get_id,
             moved: false,
             cranelift_variable: None
         }
@@ -213,6 +280,7 @@ struct Parser {
     lex: lexer::Lexer,
     all_instructions: Vec<Expression>,
     all_registered_variables: Vec<VariableInfo>,
+    variable_id: usize
 }
 
 impl Parser {
@@ -222,13 +290,14 @@ impl Parser {
             lex: get_lex,
             all_instructions: Vec::new(),
             all_registered_variables: Vec::new(),
+            variable_id: 0
         }
     }
 
-    fn parse_expression(&mut self) -> Expression {
+    fn parse_expression(&mut self, target: Option<Expression>) -> Expression {
         let expr = self.parse_primary();
 
-        return self.parse_binary_operator(expr);
+        return self.parse_binary_operator(expr, target);
     }
 
     fn parse_number(&mut self) -> Expression {
@@ -244,7 +313,7 @@ impl Parser {
 
         self.lex.get_next_token();
 
-        let ret_val = self.parse_expression();
+        let ret_val = self.parse_expression(None);
 
         return Expression::RRealReturn { ret: Box::new(ret_val) };
     }
@@ -267,19 +336,31 @@ impl Parser {
         return Expression::RVariable { name: ident };
     }
 
-    fn parse_equals(&mut self, lv: Expression) -> Expression {
+    fn parse_equals(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
 
         self.lex.get_next_token();
 
-        let rv = self.parse_expression();
+        let rv = self.parse_expression(target);
 
         return Expression::REquals { lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
 
-    fn parse_binary_operator(&mut self, lv: Expression) -> Expression {
+    fn parse_add(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
+
+        self.lex.get_next_token();
+
+        let rv = self.parse_expression(target.clone());
+
+        let final_target = if let Some(t) = target { t } else { lv.clone() };
+
+        return Expression::RAdd { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
+    }
+
+    fn parse_binary_operator(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
 
         match &self.lex.current_token {
-            lexer::LexerToken::Char('=') => self.parse_equals(lv),
+            lexer::LexerToken::Char('=') => self.parse_equals(lv.clone(), Some(lv)),
+            lexer::LexerToken::Char('+') => self.parse_add(lv, target),
             lexer::LexerToken::Char(';') => lv,
             _ => panic!("Unknown binary operator, found {:#?}", &self.lex.current_token)
         }
@@ -321,7 +402,9 @@ impl Parser {
 
         self.lex.get_next_token();
 
-        let new_var_info = VariableInfo::new(get_name.clone(), get_type.clone());
+        let new_var_info = VariableInfo::new(get_name.clone(), get_type.clone(), self.variable_id);
+
+        self.variable_id += 1;
 
         self.all_registered_variables.push(new_var_info);
 
@@ -399,7 +482,7 @@ impl Parser {
 
         while self.lex.current_token != lexer::LexerToken::Char('}') && self.lex.current_token != lexer::LexerToken::EndOfFile {
 
-            let expr: Expression = self.parse_expression();
+            let expr: Expression = self.parse_expression(None);
 
             if self.lex.current_token != lexer::LexerToken::Char(';') {
                 panic!("Expected ';'");
@@ -452,6 +535,7 @@ impl Parser {
 }
 
 fn main() {
+
     let lex: lexer::Lexer = lexer::Lexer::new(fs::read_to_string("main.rstini").expect("Cannot open main.rstini"));
 
     let mut par: Parser = Parser::new(lex);
