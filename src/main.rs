@@ -34,6 +34,10 @@ use std::fs::File;
 
 use cranelift::prelude::isa::x64::settings::builder;
 
+use std::collections::HashMap;
+
+use std::fmt::Write;
+
 #[derive(Clone, PartialEq, Debug)]
 enum RType {
     Int64,
@@ -79,6 +83,16 @@ enum Expression {
         lvalue: Box<Expression>,
         rvalue: Box<Expression>
     },
+    RSub {
+        target: Box<Expression>,
+        lvalue: Box<Expression>,
+        rvalue: Box<Expression>
+    },
+    RMul {
+        target: Box<Expression>,
+        lvalue: Box<Expression>,
+        rvalue: Box<Expression>
+    },
     RRealReturn {
         ret: Box<Expression>
     },
@@ -109,6 +123,9 @@ impl Expression {
         match self {
             Expression::RVariable { name } | Expression::RLet { name, .. } => {
                 find_cranelift_variable(name.to_string(), reg_vars)
+            },
+            Expression::RAdd { target, .. } | Expression::RSub { target, .. } | Expression::RMul { target, .. } => {
+                target.codegen_variable(reg_vars)
             }
             _ => panic!("codegen_variable() has no use for {:#?}.", self)
         }
@@ -122,7 +139,7 @@ impl Expression {
             Expression::RVariable { name, .. } => {
                 builder.use_var(*find_cranelift_variable(name.to_string(), reg_vars))
             },
-            Expression::RAdd { target, .. } => {
+            Expression::RAdd { target, .. } | Expression::RSub { target, .. } | Expression::RMul { target, .. } => {
                 builder.use_var(*target.codegen_variable(&reg_vars))
             },
             _ => panic!("codegen_value() has no use for {:#?}.", self)
@@ -179,7 +196,7 @@ impl Expression {
             return func;
         }
 
-         panic!("codegen_function() has no use for this type.")
+        panic!("codegen_function() has no use for this type.")
     }
 
     fn codegen(&self, builder: &mut FunctionBuilder, reg_vars: &mut Vec<VariableInfo>, func_ty: RType) {
@@ -205,7 +222,9 @@ impl Expression {
 
                 builder.def_var(*lv, rv);
             },
-            Expression::RAdd { target, lvalue, rvalue } => {
+            Expression::RAdd { target, lvalue, rvalue } | 
+            Expression::RSub { target, lvalue, rvalue } | 
+            Expression::RMul { target, lvalue, rvalue } => {
 
                 lvalue.codegen(builder, reg_vars, func_ty.clone());
                 rvalue.codegen(builder, reg_vars, func_ty.clone());
@@ -215,9 +234,14 @@ impl Expression {
                 let lv = lvalue.codegen_value(builder, lv_ty.clone(), reg_vars);
                 let rv = rvalue.codegen_value(builder, lv_ty, reg_vars);
 
-                let add = builder.ins().iadd(lv, rv);
+                let equation: Value = match self {
+                    Expression::RAdd { .. } => builder.ins().iadd(lv, rv),
+                    Expression::RSub { .. } => builder.ins().isub(lv, rv),
+                    Expression::RMul { .. } => builder.ins().imul(lv, rv),
+                    _ => todo!()
+                };
 
-                builder.def_var(*target.codegen_variable(&reg_vars), add);
+                builder.def_var(*target.codegen_variable(&reg_vars), equation);
             },
             Expression::RRealReturn { ret } => {
 
@@ -280,7 +304,27 @@ struct Parser {
     lex: lexer::Lexer,
     all_instructions: Vec<Expression>,
     all_registered_variables: Vec<VariableInfo>,
-    variable_id: usize
+    variable_id: usize,
+    binary_precedence: HashMap<String, i64>,
+}
+
+fn init_binary_precedence() -> HashMap<String, i64> {
+
+    let mut h = HashMap::new();
+
+    h.insert(String::from(";"), -1);
+
+    h.insert(String::from("="), 2);
+    h.insert(String::from("+="), 3);
+    h.insert(String::from("-="), 3);
+
+    h.insert(String::from("<"), 10);
+    h.insert(String::from(">"), 10);
+    h.insert(String::from("+"), 20);
+    h.insert(String::from("-"), 20);
+    h.insert(String::from("*"), 40);
+
+    return h;
 }
 
 impl Parser {
@@ -290,14 +334,20 @@ impl Parser {
             lex: get_lex,
             all_instructions: Vec::new(),
             all_registered_variables: Vec::new(),
-            variable_id: 0
+            variable_id: 0,
+            binary_precedence: init_binary_precedence(),
         }
     }
 
     fn parse_expression(&mut self, target: Option<Expression>) -> Expression {
         let expr = self.parse_primary();
 
-        return self.parse_binary_operator(expr, target);
+        let final_target = match target.clone() {
+            Some(t) => target,
+            None => Some(expr.clone())
+        };
+
+        return self.parse_binary_operator(0, expr, final_target);
     }
 
     fn parse_number(&mut self) -> Expression {
@@ -336,34 +386,83 @@ impl Parser {
         return Expression::RVariable { name: ident };
     }
 
-    fn parse_equals(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
-
-        self.lex.get_next_token();
-
-        let rv = self.parse_expression(target);
+    fn parse_equals(&mut self, lv: Expression, rv: Expression) -> Expression {
 
         return Expression::REquals { lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
 
-    fn parse_add(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
-
-        self.lex.get_next_token();
-
-        let rv = self.parse_expression(target.clone());
+    fn parse_add(&mut self, lv: Expression, rv: Expression, target: Option<Expression>) -> Expression {
 
         let final_target = if let Some(t) = target { t } else { lv.clone() };
 
         return Expression::RAdd { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
 
-    fn parse_binary_operator(&mut self, lv: Expression, target: Option<Expression>) -> Expression {
+    fn parse_sub(&mut self, lv: Expression, rv: Expression, target: Option<Expression>) -> Expression {
 
-        match &self.lex.current_token {
-            lexer::LexerToken::Char('=') => self.parse_equals(lv.clone(), Some(lv)),
-            lexer::LexerToken::Char('+') => self.parse_add(lv, target),
-            lexer::LexerToken::Char(';') => lv,
-            _ => panic!("Unknown binary operator, found {:#?}", &self.lex.current_token)
+        let final_target = if let Some(t) = target { t } else { lv.clone() };
+
+        return Expression::RSub { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
+    }
+
+    fn parse_mul(&mut self, lv: Expression, rv: Expression, target: Option<Expression>) -> Expression {
+
+        let final_target = if let Some(t) = target { t } else { lv.clone() };
+
+        return Expression::RMul { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
+    }
+
+    fn get_token_precedence(&self, tok: String) -> i64 {
+        return self.binary_precedence.get(&tok).copied().unwrap_or(-1);
+    }
+
+    fn create_binary(&mut self, op: String, lv: Expression, rv: Expression, target: Option<Expression>) -> Expression {
+
+        match op.as_str() {
+            "=" => self.parse_equals(lv, rv),
+            "+" => self.parse_add(lv, rv, target),
+            "-" => self.parse_sub(lv, rv, target),
+            "*" => self.parse_mul(lv, rv, target),
+            ";" => lv,
+            _ => panic!("Unknown binary operator, found {:#?}", &op)
         }
+    }
+
+    fn parse_binary_operator(&mut self, expr_precedence: i64, lv: Expression, target: Option<Expression>) -> Expression {
+
+        let mut grab_lv = lv;
+
+        while true {
+
+            let mut left_tok_string: String = if let lexer::LexerToken::Char(c) = self.lex.current_token { String::from(c) } else { String::from("") };
+
+            if left_tok_string == ";" { return grab_lv; }
+
+            self.lex.get_next_token();
+
+            if let lexer::LexerToken::Char(c) = self.lex.current_token {
+                left_tok_string.write_char(c).unwrap();
+                self.lex.get_next_token();
+            }
+
+            let precedence = self.get_token_precedence(left_tok_string.clone());
+
+            if precedence < expr_precedence { return grab_lv; }
+
+            let mut grab_rv = self.parse_primary();
+
+            let right_tok_string: String = if let lexer::LexerToken::Char(c) = self.lex.current_token { String::from(c) } else { String::from("") };
+
+            let next_precedence = self.get_token_precedence(right_tok_string);
+
+            if precedence < next_precedence {
+                grab_rv = self.parse_binary_operator(precedence + 1, grab_rv, target.clone());
+            }
+
+            grab_lv = self.create_binary(left_tok_string, grab_lv, grab_rv, target.clone());
+        }
+
+        panic!("What");
     }
 
     fn parse_type(&mut self, ident: String) -> RType {
