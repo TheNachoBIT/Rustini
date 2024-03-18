@@ -1,6 +1,7 @@
 fn main() -> i32 {
 	
 	let a: i32 = 10;
-	let b: i32 = a + 2 * 4;
+	let sixty_four: i64 = a as i64 + 6;
+	let b: i32 = sixty_four as i32 + 10 * 60;
 	return b;
 }

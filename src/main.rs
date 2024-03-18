@@ -38,11 +38,11 @@ use std::collections::HashMap;
 
 use std::fmt::Write;
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug, PartialOrd, Eq, Ord)]
 enum RType {
-    Int64,
+    Void,
     Int32,
-    Void
+    Int64,
 }
 
 impl RType {
@@ -93,6 +93,11 @@ enum Expression {
         lvalue: Box<Expression>,
         rvalue: Box<Expression>
     },
+    RAs {
+        target: Box<Expression>,
+        val: Box<Expression>,
+        ty: RType,
+    },
     RRealReturn {
         ret: Box<Expression>
     },
@@ -118,6 +123,19 @@ impl Expression {
         false
     }
 
+    fn find_rtype(&self, default_if_fails: RType, reg_vars: &[VariableInfo]) -> RType {
+
+        match self {
+            Expression::RLet { ty, .. } | Expression::RAs { ty, .. } => {
+                ty.clone()
+            },
+            Expression::RVariable { name } => {
+                find_type(name.to_string(), reg_vars)
+            }
+            _ => default_if_fails
+        }
+    }
+
     fn codegen_variable<'var>(&self, reg_vars: &'var [VariableInfo]) -> &'var Variable {
 
         match self {
@@ -139,7 +157,10 @@ impl Expression {
             Expression::RVariable { name, .. } => {
                 builder.use_var(*find_cranelift_variable(name.to_string(), reg_vars))
             },
-            Expression::RAdd { target, .. } | Expression::RSub { target, .. } | Expression::RMul { target, .. } => {
+            Expression::RAdd { target, .. } | 
+            Expression::RSub { target, .. } | 
+            Expression::RMul { target, .. } |
+            Expression::RAs  { target, .. } => {
                 builder.use_var(*target.codegen_variable(&reg_vars))
             },
             _ => panic!("codegen_value() has no use for {:#?}.", self)
@@ -204,7 +225,7 @@ impl Expression {
         match self {
             Expression::RLet { name, ty } => {
                 for v in reg_vars {
-                    if &v.name == name {
+                    if &v.name == name && v.cranelift_variable == None {
                         v.cranelift_variable = Some(Variable::new(v.id));
                         builder.declare_var(v.cranelift_variable.unwrap(), ty.codegen());
                     }
@@ -226,10 +247,12 @@ impl Expression {
             Expression::RSub { target, lvalue, rvalue } | 
             Expression::RMul { target, lvalue, rvalue } => {
 
-                lvalue.codegen(builder, reg_vars, func_ty.clone());
-                rvalue.codegen(builder, reg_vars, func_ty.clone());
+                let final_ty = target.find_rtype(func_ty.clone(), &reg_vars);
 
-                let lv_ty = if lvalue.get_name() != "" { find_type(lvalue.get_name(), &reg_vars) } else { func_ty.clone() };
+                lvalue.codegen(builder, reg_vars, final_ty.clone());
+                rvalue.codegen(builder, reg_vars, final_ty.clone());
+
+                let lv_ty = lvalue.find_rtype(func_ty.clone(), &reg_vars);
 
                 let lv = lvalue.codegen_value(builder, lv_ty.clone(), reg_vars);
                 let rv = rvalue.codegen_value(builder, lv_ty, reg_vars);
@@ -243,6 +266,24 @@ impl Expression {
 
                 builder.def_var(*target.codegen_variable(&reg_vars), equation);
             },
+            Expression::RAs { target, val, ty } => {
+
+                let final_ty = target.find_rtype(func_ty.clone(), &reg_vars);
+
+                val.codegen(builder, reg_vars, final_ty.clone());
+                let val_ty = val.find_rtype(func_ty.clone(), &reg_vars);
+
+                let v = val.codegen_value(builder, final_ty.clone(), reg_vars);
+
+                let cast = if final_ty > val_ty { 
+                    builder.ins().sextend(ty.codegen(), v)
+                }
+                else {
+                    builder.ins().ireduce(ty.codegen(), v)
+                };
+
+                builder.def_var(*target.codegen_variable(&reg_vars), cast);
+            },
             Expression::RRealReturn { ret } => {
 
                 ret.codegen(builder, reg_vars, func_ty.clone());
@@ -250,7 +291,7 @@ impl Expression {
                 let rv = ret.codegen_value(builder, func_ty, reg_vars);
 
                 builder.ins().return_(&[rv]);
-            }
+            },
             _ => {}
         }
     }
@@ -339,8 +380,28 @@ impl Parser {
         }
     }
 
+    fn parse_as(&mut self, expr: Expression, get_target: Option<Expression>) -> Expression {
+
+        println!("Parsing 'as'...");
+
+        self.lex.get_next_token();
+
+        let get_type = if let lexer::LexerToken::Identifier(ident) = &self.lex.current_token { 
+            self.parse_type(ident.to_string()) 
+        } 
+        else { 
+            panic!("Expected identifier for type!") 
+        };
+
+        self.lex.get_next_token();
+
+        let final_target = if let Some(t) = get_target { t } else { expr.clone() };
+
+        return Expression::RAs { target: Box::new(final_target), val: Box::new(expr), ty: get_type };
+    }
+
     fn parse_expression(&mut self, target: Option<Expression>) -> Expression {
-        let expr = self.parse_primary();
+        let mut expr = self.parse_primary(target.clone());
 
         let final_target = match target.clone() {
             Some(t) => target,
@@ -368,15 +429,21 @@ impl Parser {
         return Expression::RRealReturn { ret: Box::new(ret_val) };
     }
 
-    fn parse_primary(&mut self) -> Expression {
+    fn parse_primary(&mut self, target: Option<Expression>) -> Expression {
 
-        match &self.lex.current_token {
+        let mut res = match &self.lex.current_token {
             lexer::LexerToken::Let => self.parse_let(),
             lexer::LexerToken::Identifier(ident) => self.parse_identifier(ident.clone()),
             lexer::LexerToken::Number => self.parse_number(),
             lexer::LexerToken::Return => self.parse_return(),
             _ => panic!("Unknown primary identifier, found {:#?}", &self.lex.current_token)
+        };
+
+        if self.lex.current_token == lexer::LexerToken::As {
+            res = self.parse_as(res, target.clone());
         }
+
+        res
     }
 
     fn parse_identifier(&mut self, ident: String) -> Expression {
@@ -432,7 +499,7 @@ impl Parser {
 
         let mut grab_lv = lv;
 
-        while true {
+        loop {
 
             let mut left_tok_string: String = if let lexer::LexerToken::Char(c) = self.lex.current_token { String::from(c) } else { String::from("") };
 
@@ -449,7 +516,7 @@ impl Parser {
 
             if precedence < expr_precedence { return grab_lv; }
 
-            let mut grab_rv = self.parse_primary();
+            let mut grab_rv = self.parse_primary(target.clone());
 
             let right_tok_string: String = if let lexer::LexerToken::Char(c) = self.lex.current_token { String::from(c) } else { String::from("") };
 
@@ -584,7 +651,7 @@ impl Parser {
             let expr: Expression = self.parse_expression(None);
 
             if self.lex.current_token != lexer::LexerToken::Char(';') {
-                panic!("Expected ';'");
+                panic!("Expected ';'. Found {:#?}", &self.lex.current_token);
             }
 
             all_inst.push(expr);
@@ -612,6 +679,7 @@ impl Parser {
             match self.lex.current_token {
                 lexer::LexerToken::Function => { 
                     let func = self.parse_function();
+                    dbg!(&func);
                     self.all_instructions.push(func);
                 },
                 _ => break
