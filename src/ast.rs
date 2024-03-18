@@ -1,20 +1,15 @@
-use std::fs;
-use std::process::Command;
-
 use cranelift::codegen::entity::EntityRef;
 use cranelift::codegen::ir::{AbiParam, UserFuncName, Function, InstBuilder, Signature};
 use cranelift::codegen::Context;
 use cranelift::codegen::isa::CallConv;
 use cranelift::codegen::settings;
-use cranelift::codegen::verifier::verify_function;
+
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 
 use cranelift::prelude::Type;
 use cranelift::prelude::types::*;
 
 use cranelift::prelude::Value;
-
-use cranelift::prelude::Imm64;
 
 use cranelift_object::ObjectBuilder;
 use cranelift_object::ObjectModule;
@@ -29,10 +24,6 @@ use cranelift::prelude::isa;
 use target_lexicon::Triple;
 
 use std::fs::File;
-
-use cranelift::prelude::isa::x64::settings::builder;
-
-use std::collections::HashMap;
 
 use std::fmt::Write;
 
@@ -175,7 +166,7 @@ impl Expression {
     
             let isa_builder = isa::lookup(Triple::host()).unwrap();
             let isa = isa_builder.finish(shared_flags).unwrap();
-            let call_conv = isa.default_call_conv();
+            let _call_conv = isa.default_call_conv();
 
             let obj_builder =
                 ObjectBuilder::new(isa, &**name, cranelift_module::default_libcall_names()).unwrap();

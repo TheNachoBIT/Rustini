@@ -1,43 +1,11 @@
 use crate::ast;
-use crate::ast::Expression;
+
 use crate::ast::RType;
-use crate::ast::VariableInfo;
 
 use crate::lexer;
 
-use std::fs;
-use std::process::Command;
-
-use cranelift::codegen::entity::EntityRef;
-use cranelift::codegen::ir::{AbiParam, UserFuncName, Function, InstBuilder, Signature};
-use cranelift::codegen::Context;
-use cranelift::codegen::isa::CallConv;
 use cranelift::codegen::settings;
 use cranelift::codegen::verifier::verify_function;
-use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-
-use cranelift::prelude::Type;
-use cranelift::prelude::types::*;
-
-use cranelift::prelude::Value;
-
-use cranelift::prelude::Imm64;
-
-use cranelift_object::ObjectBuilder;
-use cranelift_object::ObjectModule;
-
-use cranelift::prelude::Configurable;
-
-use cranelift_module::Module;
-use cranelift_module::Linkage;
-
-use cranelift::prelude::isa;
-
-use target_lexicon::Triple;
-
-use std::fs::File;
-
-use cranelift::prelude::isa::x64::settings::builder;
 
 use std::collections::HashMap;
 
@@ -103,10 +71,10 @@ impl Parser {
     }
 
     pub fn parse_expression(&mut self, target: Option<ast::Expression>) -> ast::Expression {
-        let mut expr = self.parse_primary(target.clone());
+        let expr = self.parse_primary(target.clone());
 
         let final_target = match target.clone() {
-            Some(t) => target,
+            Some(_t) => target,
             None => Some(expr.clone())
         };
 
@@ -230,8 +198,6 @@ impl Parser {
 
             grab_lv = self.create_binary(left_tok_string, grab_lv, grab_rv, target.clone());
         }
-
-        panic!("What");
     }
 
     pub fn parse_type(&mut self, ident: String) -> RType {
