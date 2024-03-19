@@ -11,6 +11,8 @@ use std::collections::HashMap;
 
 use std::fmt::Write;
 
+use std::process::Command;
+
 pub struct Parser {
     lex: lexer::Lexer,
     all_instructions: Vec<ast::Expression>,
@@ -51,8 +53,6 @@ impl Parser {
     }
 
     pub fn parse_as(&mut self, expr: ast::Expression, get_target: Option<ast::Expression>) -> ast::Expression {
-
-        println!("Parsing 'as'...");
 
         self.lex.get_next_token();
 
@@ -347,7 +347,7 @@ impl Parser {
             match self.lex.current_token {
                 lexer::LexerToken::Function => { 
                     let func = self.parse_function();
-                    dbg!(&func);
+                    //dbg!(&func);
                     self.all_instructions.push(func);
                 },
                 _ => break
@@ -360,11 +360,22 @@ impl Parser {
             let flags = settings::Flags::new(settings::builder());
             let res = verify_function(&cg_inst, &flags);
 
-            println!("{}", cg_inst.display());
+            //println!("{}", cg_inst.display());
 
             if let Err(errors) = res {
                 panic!("{}", errors);
             }
+
+            println!("Linking...");
+
+            let output_name = if cfg!(windows) {
+                "result.exe"
+            }
+            else {
+                "result"
+            };
+
+            let link_output = Command::new("ld").args(["main.o", "-o", &output_name]).output().expect("Ooops!");
         }
     }
 }

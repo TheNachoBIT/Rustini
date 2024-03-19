@@ -148,10 +148,23 @@ impl Expression {
             },
             Expression::RAdd { target, .. } | 
             Expression::RSub { target, .. } | 
-            Expression::RMul { target, .. } |
-            Expression::RAs  { target, .. } => {
+            Expression::RMul { target, .. } => {
                 builder.use_var(*target.codegen_variable(&reg_vars))
             },
+            Expression::RAs { val, ty, .. } => {
+
+                let val_ty = val.find_rtype(ty.clone(), reg_vars);
+                let val_cg = val.codegen_value(builder, ty.clone(), reg_vars);
+
+                let cast = if val_ty < *ty { 
+                    builder.ins().sextend(ty.codegen(), val_cg)
+                }
+                else {
+                    builder.ins().ireduce(ty.codegen(), val_cg)
+                };
+
+                cast
+            }
             _ => panic!("codegen_value() has no use for {:#?}.", self)
         }
     }
@@ -254,24 +267,6 @@ impl Expression {
                 };
 
                 builder.def_var(*target.codegen_variable(&reg_vars), equation);
-            },
-            Expression::RAs { target, val, ty } => {
-
-                let final_ty = target.find_rtype(func_ty.clone(), &reg_vars);
-
-                val.codegen(builder, reg_vars, final_ty.clone());
-                let val_ty = val.find_rtype(func_ty.clone(), &reg_vars);
-
-                let v = val.codegen_value(builder, final_ty.clone(), reg_vars);
-
-                let cast = if final_ty > val_ty { 
-                    builder.ins().sextend(ty.codegen(), v)
-                }
-                else {
-                    builder.ins().ireduce(ty.codegen(), v)
-                };
-
-                builder.def_var(*target.codegen_variable(&reg_vars), cast);
             },
             Expression::RRealReturn { ret } => {
 
