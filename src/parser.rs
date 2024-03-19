@@ -52,6 +52,26 @@ impl Parser {
         }
     }
 
+    pub fn check_if_moved(&mut self, expr: &ast::Expression) {
+
+        for v in &self.all_registered_variables {
+            if expr.get_name() == v.name {
+                if v.moved {
+                    panic!("{} is already moved!", v.name);
+                }
+            }
+        }
+    }
+
+    pub fn set_as_moved(&mut self, expr: &ast::Expression) {
+
+        for v in &mut self.all_registered_variables {
+            if expr.get_name() == v.name {
+                v.moved = true;
+            }
+        }
+    }
+
     pub fn parse_as(&mut self, expr: ast::Expression, get_target: Option<ast::Expression>) -> ast::Expression {
 
         self.lex.get_next_token();
@@ -64,6 +84,10 @@ impl Parser {
         };
 
         self.lex.get_next_token();
+
+        self.check_if_moved(&expr);
+
+        self.set_as_moved(&expr);
 
         let final_target = if let Some(t) = get_target { t } else { expr.clone() };
 
@@ -125,12 +149,21 @@ impl Parser {
 
     pub fn parse_equals(&mut self, lv: ast::Expression, rv: ast::Expression) -> ast::Expression {
 
+        self.check_if_moved(&rv);
+        self.set_as_moved(&rv);
+
         return ast::Expression::REquals { lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
 
     pub fn parse_add(&mut self, lv: ast::Expression, rv: ast::Expression, target: Option<ast::Expression>) -> ast::Expression {
 
         let final_target = if let Some(t) = target { t } else { lv.clone() };
+
+        self.check_if_moved(&lv);
+        self.set_as_moved(&lv);
+
+        self.check_if_moved(&rv);
+        self.set_as_moved(&rv);
 
         return ast::Expression::RAdd { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
@@ -139,12 +172,24 @@ impl Parser {
 
         let final_target = if let Some(t) = target { t } else { lv.clone() };
 
+        self.check_if_moved(&lv);
+        self.set_as_moved(&lv);
+
+        self.check_if_moved(&rv);
+        self.set_as_moved(&rv);
+
         return ast::Expression::RSub { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }
 
     pub fn parse_mul(&mut self, lv: ast::Expression, rv: ast::Expression, target: Option<ast::Expression>) -> ast::Expression {
 
         let final_target = if let Some(t) = target { t } else { lv.clone() };
+
+        self.check_if_moved(&lv);
+        self.set_as_moved(&lv);
+
+        self.check_if_moved(&rv);
+        self.set_as_moved(&rv);
 
         return ast::Expression::RMul { target: Box::new(final_target), lvalue: Box::new(lv), rvalue: Box::new(rv) };
     }

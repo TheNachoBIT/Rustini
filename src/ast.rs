@@ -306,11 +306,11 @@ pub fn find_cranelift_variable(name: String, reg_vars: &[VariableInfo]) -> &Vari
 
 #[derive(Clone)]
 pub struct VariableInfo {
-    name: String,
-    ty: RType,
-    id: usize,
-    moved: bool,
-    cranelift_variable: Option<Variable>
+    pub name: String,
+    pub ty: RType,
+    pub id: usize,
+    pub moved: bool,
+    pub cranelift_variable: Option<Variable>
 }
 
 impl VariableInfo {
