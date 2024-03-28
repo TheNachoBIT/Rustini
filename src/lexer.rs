@@ -10,6 +10,8 @@ pub enum LexerToken {
     Let,
     As,
     Return,
+    If,
+    Else,
 }
 
 pub struct Lexer {
@@ -84,6 +86,8 @@ impl Lexer {
             "let" => LexerToken::Let,
             "as" => LexerToken::As,
             "return" => LexerToken::Return,
+            "if" => LexerToken::If,
+            "else" => LexerToken::Else,
             _ => LexerToken::Identifier(self.string_buffer.to_string()),
         }
     }

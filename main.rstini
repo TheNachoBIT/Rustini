@@ -1,8 +1,10 @@
 fn main() -> i32 {
+
+	let f: f64 = 1.4 + 30.2;
 	
 	let a: i32 = 10;
 	let c: i32 = a + 6;
-	let b: i32 = c + 10 * 70;
+	let b: i32 = a + 10 * 70;
 
 	return b;
 }

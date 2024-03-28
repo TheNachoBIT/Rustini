@@ -25,13 +25,16 @@ use target_lexicon::Triple;
 
 use std::fs::File;
 
-use std::fmt::Write;
-
 #[derive(Clone, PartialEq, Debug, PartialOrd, Eq, Ord)]
 pub enum RType {
     Void,
+    Bool,
+    Int8,
+    Int16,
     Int32,
     Int64,
+    Float32,
+    Float64,
 }
 
 impl RType {
@@ -40,6 +43,10 @@ impl RType {
         match self {
             RType::Int64 => I64,
             RType::Int32 => I32,
+            RType::Int16 => I16,
+            RType::Int8 | RType::Bool => I8,
+            RType::Float32 => F32,
+            RType::Float64 => F64,
             _ => panic!("Type not supported for codegen.")
         }
     }
@@ -90,7 +97,20 @@ pub enum Expression {
     RRealReturn {
         ret: Box<Expression>
     },
+    RCompare {
+        target: Box<Expression>,
+        lvalue: Box<Expression>,
+        rvalue: Box<Expression>,
+        operator: String,
+    },
     RNothing,
+}
+
+pub fn is_float(ty: &RType) -> bool {
+    match ty {
+        RType::Float32 | RType::Float64 => true,
+        _ => false
+    }
 }
 
 impl Expression {
@@ -141,7 +161,16 @@ impl Expression {
     pub fn codegen_value(&self, builder: &mut FunctionBuilder, ty: RType, reg_vars: &Vec<VariableInfo>) -> Value {
         match self {
             Expression::RNumber { val } => {
-                builder.ins().iconst(ty.codegen(), *val as i64)
+                if val.fract() == 0.0 {
+                    builder.ins().iconst(ty.codegen(), *val as i64)
+                }
+                else {
+                    match &ty {
+                        RType::Float32 => builder.ins().f32const(*val as f32),
+                        RType::Float64 => builder.ins().f64const(*val),
+                        _ => panic!("Type not compatible in codegen!")
+                    }
+                }
             },
             Expression::RVariable { name, .. } => {
                 builder.use_var(*find_cranelift_variable(name.to_string(), reg_vars))
@@ -254,15 +283,15 @@ impl Expression {
                 lvalue.codegen(builder, reg_vars, final_ty.clone());
                 rvalue.codegen(builder, reg_vars, final_ty.clone());
 
-                let lv_ty = lvalue.find_rtype(func_ty.clone(), &reg_vars);
+                let lv_ty = lvalue.find_rtype(final_ty.clone(), &reg_vars);
 
                 let lv = lvalue.codegen_value(builder, lv_ty.clone(), reg_vars);
-                let rv = rvalue.codegen_value(builder, lv_ty, reg_vars);
+                let rv = rvalue.codegen_value(builder, lv_ty.clone(), reg_vars);
 
                 let equation: Value = match self {
-                    Expression::RAdd { .. } => builder.ins().iadd(lv, rv),
-                    Expression::RSub { .. } => builder.ins().isub(lv, rv),
-                    Expression::RMul { .. } => builder.ins().imul(lv, rv),
+                    Expression::RAdd { .. } => if !is_float(&lv_ty.clone()) { builder.ins().iadd(lv, rv) } else { builder.ins().fadd(lv, rv) } ,
+                    Expression::RSub { .. } => if !is_float(&lv_ty.clone()) { builder.ins().isub(lv, rv) } else { builder.ins().fsub(lv, rv) } ,
+                    Expression::RMul { .. } => if !is_float(&lv_ty.clone()) { builder.ins().imul(lv, rv) } else { builder.ins().fmul(lv, rv) } ,
                     _ => todo!()
                 };
 

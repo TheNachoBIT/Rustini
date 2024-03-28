@@ -40,6 +40,14 @@ pub fn init_binary_precedence() -> HashMap<String, i64> {
     return h;
 }
 
+// This is probably going to be here temporarily, because i have no traits yet.
+pub fn derives_copy_trait(ty: &ast::RType) -> bool {
+    match ty {
+        ast::RType::Int64 | ast::RType::Int32 | ast::RType::Int16 | ast::RType::Int8 | ast::RType::Bool => true,
+        _ => false,
+    }
+}
+
 impl Parser {
 
     pub fn new(get_lex: lexer::Lexer) -> Self {
@@ -56,6 +64,11 @@ impl Parser {
 
         for v in &self.all_registered_variables {
             if expr.get_name() == v.name {
+
+                if derives_copy_trait(&v.ty) {
+                    continue;
+                }
+
                 if v.moved {
                     panic!("{} is already moved!", v.name);
                 }
@@ -68,6 +81,10 @@ impl Parser {
         for v in &mut self.all_registered_variables {
             if expr.get_name() == v.name {
                 v.moved = true;
+
+                if derives_copy_trait(&v.ty) {
+                    v.moved = false;
+                }
             }
         }
     }
@@ -248,8 +265,13 @@ impl Parser {
     pub fn parse_type(&mut self, ident: String) -> RType {
 
         match ident.as_str() {
-            "i32" => RType::Int32,
             "i64" => RType::Int64,
+            "i32" => RType::Int32,
+            "i16" => RType::Int16,
+            "i8" => RType::Int8,
+            "bool" => RType::Bool,
+            "f32" => RType::Float32,
+            "f64" => RType::Float64,
             _ => panic!("Type \"{}\" does not exist", ident)
         }
     }
@@ -405,7 +427,7 @@ impl Parser {
             let flags = settings::Flags::new(settings::builder());
             let res = verify_function(&cg_inst, &flags);
 
-            //println!("{}", cg_inst.display());
+            println!("{}", cg_inst.display());
 
             if let Err(errors) = res {
                 panic!("{}", errors);
